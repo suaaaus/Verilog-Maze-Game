@@ -2,7 +2,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                   data_out, done, busy, ack_err, sda, scl);
     input clk, reset;
     input start, stop, write, read;
-    input ack_in;
+    input ack_in; // 더 받을지 말지 (1: 그만받는다, read에서 마지막 byte)
     input tick;
     input [7:0] data_in;
     output reg [7:0] data_out;
@@ -127,6 +127,10 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                             2'd3: begin
                                 scl   <= 1'b0;
                                 done  <= 1'b1;
+                                // // *** 해결책: 단위 동작이 끝났으므로 명령어 래치를 여기서 초기화 ***
+                                // 근데 이거 있으면 restart가 안됨...;;
+                                // r_write <= 0;
+                                // r_read  <= 0;
                                 state <= IDLE;
                             end
                         endcase
@@ -167,6 +171,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
         end
     end
 
+/////// simulation debugging 용 ////////////
     reg [39:0] state_str;
     always @(*) begin
         case (state)
@@ -183,4 +188,5 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
             default: state_str = "UNDEF";
         endcase
     end
+
 endmodule
