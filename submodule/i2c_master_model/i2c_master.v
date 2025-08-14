@@ -35,7 +35,8 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                STOP_3    = 4'd10,
                STOP_4    = 4'd11,
 
-               CMD_WAIT = 4'd12;
+               CMD_WAIT = 4'd12,
+               ABORT_STOP = 4'd13;
 
     reg [3:0] state;
     reg [2:0] bit_cnt;
@@ -63,6 +64,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
             data_out  <= 0;
             r_write   <= 0;
             r_read    <= 0;
+            out_sda_data <= 0;
         end 
         else begin
             done <= 0;
@@ -89,23 +91,10 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                             out_sda_data <= 1'b1;
                             state        <= START_1;
                         end
-
-                        // // 2. Transaction 종료
-                        // else if (busy && stop) begin
-                        //     out_sda_en <= 1'b1;  // 출력 (stop조건 제어해야 하니까)
-                        //     state <= STOP_1;
-
-                        // // 3. 진행 중인 Transaction 계속 (Multi-byte)
-                        // end 
-                        // else if (busy && (r_write || r_read)) begin
-                        //     out_sda_en <= 1'b1; // 출력 (start조건 제어해야 하니까)
-                        //     data_reg <= data_in;
-                        //     state <= START_1; 
-                        // end
                     end
 
                     START_1: begin
-                        out_sda_data <= 1'b1; // start 조건                      
+                        out_sda_data <= 1'b1;                 
                         state <= START_2;
                     end
 
@@ -137,6 +126,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                     end
 
                     WRITE_BIT: begin
+                        busy <= 1;
                         case (tick_cnt)
                             2'd0: begin 
                                 // scl이 1 되기 전에 SDA에 데이터 준비
@@ -153,7 +143,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                                 tick_cnt <= 0;
                                 if (bit_cnt == 0) begin
                                     state <= WAIT_ACK;
-                                    out_sda_en <= 1'b0;
+                                    out_sda_data <= 0;
                                 end 
                                 else 
                                     bit_cnt <= bit_cnt - 3'd1;
@@ -162,8 +152,11 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                     end
 
                     WAIT_ACK: begin
+                        busy <= 1;
                         case (tick_cnt)
-                            2'd0: tick_cnt <= tick_cnt + 1;
+                            2'd0: begin tick_cnt <= tick_cnt + 1;
+                                         out_sda_en <= 1'b0;
+                            end
                             2'd1: begin 
                                 r_scl <= 1'b1; 
                                 tick_cnt <= tick_cnt + 1; 
@@ -174,14 +167,23 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                                 tick_cnt <= tick_cnt + 1;
                             end
                             2'd3: begin
-                                r_scl   <= 1'b0;
-                                done  <= 1'b1;
-                                state <= CMD_WAIT;
+                                r_scl <= 1'b0;
+                                tick_cnt <= 0; // tick_cnt 초기화
+
+                                if (in_sda) begin // NACK(1) 감지
+                                    state <= ABORT_STOP; // 강제 STOP
+                                    out_sda_en <= 1'b1; // stop 조건 위한 en 활성화
+                                end 
+                                else begin       // ACK 수신
+                                    done  <= 1'b1;
+                                    state <= CMD_WAIT;  
+                                end
                             end
                         endcase
                     end
  
                     READ_BIT: begin
+                        busy <= 1;
                         case (tick_cnt)
                             2'd0: begin
                                 tick_cnt <= tick_cnt + 1;
@@ -191,7 +193,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                                 tick_cnt <= tick_cnt + 1;
                             end
                             2'd2: begin
-                                // SCL이 High인 동안 SDA 값을 읽어서 저장 (데이터 시프트)
+                                // SCL이 High인 동안 SDA 값을 읽어서 저장 
                                 data_reg <= {data_reg[6:0], in_sda};
                                 tick_cnt <= tick_cnt + 1;
                             end
@@ -201,7 +203,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                                  // 8비트를 모두 읽었을 때   
                                 if (bit_cnt == 0) begin                                
                                     data_out   <= data_reg; // 완성 된 값
-                                    out_sda_en   <= 1'b1; // ACK/NACK 보낼 준비
+                                    out_sda_en   <= 1'b1;  // ACK/NACK 보낼 준비
                                     out_sda_data <= ack_in; 
                                     state        <= WAIT_ACK;
                                 end
@@ -214,7 +216,8 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                     CMD_WAIT : begin
                         r_scl <= 1'b0;
                         out_sda_en <= 1'b0;
-
+                        tick_cnt <= 0; // 추가 (w/r하기전에 tick_cnt도 초기화 해야 8bit 읽음)
+                        busy <= 0;
                         // 2. Transaction 종료
                         if (stop) begin
                             out_sda_en <= 1'b1;  // 출력 (stop조건 제어해야 하니까)
@@ -227,7 +230,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                             data_reg <= data_in;
                             state <= START_1; 
                         end
-                        else if (write) begin
+                        else if (r_write) begin
                             out_sda_en <= 1'b1; // 출력 (start조건 제어해야 하니까)
                             state <= WRITE_BIT; 
                             data_reg <= data_in;
@@ -240,26 +243,47 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                         end
                     end
 
-
-                    STOP_1: begin 
-                        // out_sda_en <= 1'b1; 
+                    STOP_1: begin  // 이미 en은 1이 된 상태
                         out_sda_data <= 1'b0; 
                         state <= STOP_2; 
-                        end
+                    end
                     STOP_2: begin 
                         r_scl <= 1'b1; 
                         state <= STOP_3; 
-                        end
+                    end
                     STOP_3: begin 
                         out_sda_en <= 1'b0;  // SDA가 HiZ (1)로 stop 조건 완성
                         state <= STOP_4; 
-                        end
+                    end
                     STOP_4: begin 
                         done    <= 1'b1; 
                         busy    <= 0; 
-                        r_write <= 0;
-                        r_read  <= 0;
                         state   <= IDLE; 
+                    end
+
+                    // ABORT_STOP 상태 추가
+                    ABORT_STOP: begin
+                        busy <= 1;
+                        case (tick_cnt)
+                            2'd0: begin
+                                out_sda_data <= 1'b0;   
+                                tick_cnt <= tick_cnt + 1;
+                            end
+                            2'd1: begin
+                                r_scl <= 1'b1;
+                                tick_cnt <= tick_cnt + 1;
+                            end
+                            2'd2: begin
+                                out_sda_data <= 1'b1; // stop 조건
+                                tick_cnt <= tick_cnt + 1;
+                            end
+                            2'd3: begin
+                                done <= 1'b1; // ack_err는 1, done 신호 1
+                                state <= IDLE; 
+                                tick_cnt <= 0;
+                                busy <= 0;
+                            end
+                        endcase
                     end
 
                     default: begin
@@ -272,7 +296,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
     end
 
 
-/////// simulation debugging 용 ////////////
+///// simulation debugging 용 ////////////
     reg [39:0] i2c_state;
     always @(*) begin
         case (state)
@@ -289,6 +313,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
             STOP_3:     i2c_state = "STOP3";
             STOP_4:     i2c_state = "STOP4";
             CMD_WAIT:   i2c_state = "CMDWT";
+            ABORT_STOP: i2c_state = "SHUTD";
             default:    i2c_state = "UNDEF";
         endcase
     end
