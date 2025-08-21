@@ -29,6 +29,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                WRITE_BIT = 4'd5,
                READ_BIT  = 4'd6,
                WAIT_ACK  = 4'd7,
+               SEND_ACK = 4'd14,
 
                STOP_1    = 4'd8,
                STOP_2    = 4'd9,
@@ -51,7 +52,6 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            // 모든 레지스터 리셋
             state     <= IDLE;
             tick_cnt  <= 0;
             bit_cnt   <= 0;
@@ -68,19 +68,17 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
         end 
         else begin
             done <= 0;
-
             // 명령어 래칭: start 신호가 들어올 때 write/read 상태를 기억
             if (start) begin
                 r_write <= write;
                 r_read  <= read;
             end
-
-
             if (tick) begin
                 case (state)
                     IDLE: begin
                         r_scl <= 1'b1;
                         out_sda_en <= 1'b0; //입력  
+                        r_write <= 1'b0;
 
                         // 1. Transaction 시작 (START 또는 REPEATED START)
                         if (start) begin
@@ -94,6 +92,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                     end
 
                     START_1: begin
+                        r_scl <= 1'b1;
                         out_sda_data <= 1'b1;                 
                         state <= START_2;
                     end
@@ -155,14 +154,14 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                         busy <= 1;
                         case (tick_cnt)
                             2'd0: begin tick_cnt <= tick_cnt + 1;
-                                         out_sda_en <= 1'b0;
+                                         // out_sda_en <= 1'b0;
                             end
                             2'd1: begin 
                                 r_scl <= 1'b1; 
                                 tick_cnt <= tick_cnt + 1; 
                             end
                             2'd2: begin
-                                if (out_sda_en == 1'b0) 
+                                if (out_sda_en == 1'b0) // write이후 slave가 ack를 보내는 상황
                                     ack_err <= in_sda;
                                 tick_cnt <= tick_cnt + 1;
                             end
@@ -181,7 +180,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                             end
                         endcase
                     end
- 
+
                     READ_BIT: begin
                         busy <= 1;
                         case (tick_cnt)
@@ -205,7 +204,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                                     data_out   <= data_reg; // 완성 된 값
                                     out_sda_en   <= 1'b1;  // ACK/NACK 보낼 준비
                                     out_sda_data <= ack_in; 
-                                    state        <= WAIT_ACK;
+                                    state        <= SEND_ACK;
                                 end
                                 else 
                                     bit_cnt <= bit_cnt - 3'd1;
@@ -213,6 +212,29 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                         endcase
                     end
 
+                    SEND_ACK: begin
+                        busy <= 1;
+                        case(tick_cnt)
+                            2'd0: begin
+                                out_sda_data <= ack_in; // 0=ACK, 1=NACK
+                                tick_cnt <= tick_cnt + 1;
+                            end
+                            2'd1: begin
+                                r_scl <= 1'b1; 
+                                tick_cnt <= tick_cnt + 1;
+                            end
+                            2'd2: tick_cnt <= tick_cnt + 1;
+                            2'd3: begin
+                                r_scl <= 1'b0; 
+                                out_sda_en <= 1'b0; // 다시 HiZ
+                                tick_cnt <= 0;
+                                done <= 1'b1;
+                                state <= CMD_WAIT;
+                            end
+                        endcase
+                    end
+ 
+                
                     CMD_WAIT : begin
                         r_scl <= 1'b0;
                         out_sda_en <= 1'b0;
@@ -307,7 +329,8 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
             START_4:    i2c_state = "STAR4";
             WRITE_BIT:  i2c_state = "WRITE";
             READ_BIT:   i2c_state = "READ ";
-            WAIT_ACK:   i2c_state = "WAIT ";
+            WAIT_ACK:   i2c_state = "R_ACK";
+            SEND_ACK:   i2c_state = "S_ACK";
             STOP_1:     i2c_state = "STOP1";
             STOP_2:     i2c_state = "STOP2";
             STOP_3:     i2c_state = "STOP3";
