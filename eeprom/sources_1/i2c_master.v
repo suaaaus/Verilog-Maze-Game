@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                   data_out, done, busy, ack_err, sda, scl);
     input clk, reset;
@@ -252,7 +254,10 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
                             data_reg <= data_in;
                             state <= START_1; 
                         end
-                        else if (r_write) begin
+//////////////////////////////////////////////////////////////
+                        // else if (r_write) begin
+///////////////////////////////////////////////////////////////                        
+                        else if (write) begin
                             out_sda_en <= 1'b1; // 출력 (start조건 제어해야 하니까)
                             state <= WRITE_BIT; 
                             data_reg <= data_in;
@@ -329,8 +334,7 @@ module i2c_master(clk, reset, start, stop, write, read, ack_in, tick, data_in,
             START_4:    i2c_state = "STAR4";
             WRITE_BIT:  i2c_state = "WRITE";
             READ_BIT:   i2c_state = "READ ";
-            WAIT_ACK:   i2c_state = "R_ACK";
-            SEND_ACK:   i2c_state = "S_ACK";
+            WAIT_ACK:   i2c_state = "WAIT ";
             STOP_1:     i2c_state = "STOP1";
             STOP_2:     i2c_state = "STOP2";
             STOP_3:     i2c_state = "STOP3";
